@@ -1,0 +1,346 @@
+substitutions:
+  nodename: <NODENAME>
+  friendly_name: <FRIENDLY_NAME>
+  platform_name: ESP8266
+  board_type: d1_mini
+  ip_address: <IP>
+  gateway_address: <GATEWAY>
+  log_level: VERBOSE
+
+globals:
+  - id: closed_pos
+    type: int
+    initial_value: '100000'
+    restore_value: yes
+  - id: step_sel
+    type: int
+    initial_value: '16'
+    restore_value: yes
+  - id: speed_factor
+    type: int
+    initial_value: '800'
+    restore_value: no
+  - id: new_pos
+    type: int
+    initial_value: '0'
+    restore_value: no
+
+<<: !include esphome_common.yaml
+
+sensor:
+  - platform: homeassistant
+    name: "Stepper speed"
+    entity_id: <Entity id from HomeAssistant>
+    id: stepper_speed
+    on_value:
+      - lambda: !lambda |-
+          int speed = ((id(stepper_speed).state / 100) * 800) * id(step_sel);
+          ESP_LOGI("main", "Setting stepper speed to: %d", speed);
+          id(stepper1).set_max_speed(speed);
+
+cover:
+  - platform: template
+    device_class: shade
+    id: cover1
+    name: <Name that will be entity_id in homeassistant>
+    has_position: true
+    lambda: |-
+      static int last_update;
+      int update_time = 500;
+      static float ret_pos = 1.0;
+      int curr_pos = id(stepper1).current_position;
+      if((last_update + (update_time)) < millis())
+        {
+          ret_pos = 1.0 - ((float)curr_pos / (float)id(closed_pos));
+          last_update = millis();
+          //ESP_LOGI("main", "Curr_pos is: %f", curr_pos);
+        }
+      return ret_pos;
+    open_action:
+      - stepper.set_target:
+          id: stepper1
+          target: 0
+      - while:
+          condition:
+            lambda: |-
+              return id(cover1).position != 1;
+          then:
+            - cover.template.publish:
+                id: cover1
+                current_operation: !lambda |-
+                  return COVER_OPERATION_OPENING;
+            - delay: 1000 ms
+      - cover.template.publish:
+          id: cover1
+          current_operation: IDLE
+    close_action:
+      - stepper.set_target:
+          id: stepper1
+          target: !lambda |-
+            return id(closed_pos);
+      - while:
+          condition:
+            lambda: |-
+              return id(cover1).position != 0;
+          then:
+            - cover.template.publish:
+                id: cover1
+                current_operation: !lambda |-
+                  return COVER_OPERATION_CLOSING;
+            - delay: 1000 ms
+      - cover.template.publish:
+          id: cover1
+          current_operation: IDLE
+    stop_action:
+      - stepper.set_target:
+          id: stepper1
+          target: !lambda |-
+            int pos = id(stepper1).current_position;
+            return pos;
+      - cover.template.publish:
+          id: cover1
+          current_operation: IDLE
+    position_action:
+      - lambda: |-
+          ESP_LOGI("main", "Position Action has been called with value, %f", pos);
+          int target_pos = (id(closed_pos) * (1 - pos));
+          ESP_LOGI("main", "Setting new target to: , %d", target_pos);
+      - stepper.set_target:
+          id: stepper1
+          target: !lambda |-
+            int target_pos = (id(closed_pos) * (1 - pos));
+            return target_pos;
+      - while:
+          condition:
+            or:
+              - lambda: |-
+                  return id(cover1).position < (pos - 0.01);
+              - lambda: |-
+                  return id(cover1).position > (pos + 0.01);
+          then:
+            - cover.template.publish:
+                id: cover1
+                current_operation: !lambda |-
+                  if (id(cover1).position < pos)
+                    {
+                      return COVER_OPERATION_OPENING;
+                    }
+                  else
+                    {
+                      return COVER_OPERATION_CLOSING;
+                    }
+            - delay: 1000 ms
+      - cover.template.publish:
+          id: cover1
+          current_operation: IDLE
+
+stepper:
+  - platform: a4988
+    id: stepper1
+    step_pin: D5
+    dir_pin: D6
+    max_speed: 12800 steps/s
+
+    # Optional:
+    sleep_pin: D4
+    acceleration: inf
+    deceleration: inf
+    
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: D0
+      mode: INPUT_PULLDOWN_16
+      inverted: false
+    name: "Knapp 1"
+    id: button1
+    on_click:
+      - min_length: 20ms
+        max_length: 2000ms
+        then:
+          - if:
+              condition:
+                binary_sensor.is_on: button2
+              then:
+                - stepper.set_target:
+                    id: stepper1
+                    target: -200000
+              else:
+                - cover.open:
+                    id: cover1
+      - min_length: 3s
+        max_length: 10s
+        then:
+          - stepper.report_position:
+              id: stepper1
+              position: 0
+          - stepper.set_target:
+              id: stepper1
+              target: 0
+          - lambda: !lambda |-
+              ESP_LOGI("main", "Zero position set!");
+    internal: true
+                
+  - platform: gpio
+    pin:
+      number: D7
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Knapp 2"
+    id: button2
+    on_click:
+      - cover.stop:
+          id: cover1
+    internal: true
+    
+  - platform: gpio
+    pin:
+      number: D8
+      mode: INPUT_PULLDOWN_16
+      inverted: false
+    name: "Knapp 3"
+    id: button3
+    on_click:
+      - min_length: 20ms
+        max_length: 2000ms
+        then:
+          - if:
+              condition:
+                binary_sensor.is_on: button2
+              then:
+                - stepper.set_target:
+                    id: stepper1
+                    target: 200000
+              else:
+                - cover.close:
+                    id: cover1
+      - min_length: 3s
+        max_length: 10s
+        then:
+          - globals.set:
+              id: closed_pos
+              value: !lambda |-
+                ESP_LOGI("main", "Setting closed pos to: %d", id(stepper1).current_position);
+                return id(stepper1).current_position;
+    internal: true
+
+switch:
+  - platform: gpio
+    pin:
+      number: D1
+      mode: OUTPUT
+      inverted: false
+    name: "${friendly_name} MS1"
+    id: ms1
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - script.execute: closed_pos_calc
+    on_turn_off:
+      - script.execute: closed_pos_calc
+    
+  - platform: gpio
+    pin:
+      number: D2
+      mode: OUTPUT
+      inverted: false
+    name: "${friendly_name} MS2"
+    id: ms2
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - script.execute: closed_pos_calc
+    on_turn_off:
+      - script.execute: closed_pos_calc
+    
+  - platform: gpio
+    pin:
+      number: D3
+      mode: OUTPUT
+      inverted: false
+    name: "${friendly_name} MS3"
+    id: ms3
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - script.execute: closed_pos_calc
+    on_turn_off:
+      - script.execute: closed_pos_calc
+
+script:
+  - id: closed_pos_calc
+    then:
+      - lambda: |-
+          int prev_sel = 0;
+          double factor = 0;
+          if (id(ms1).state == false && id(ms2).state == false && id(ms3).state == false)
+            {
+              prev_sel = id(step_sel);
+              factor = 1.0 / (float)prev_sel;
+              
+              ESP_LOGI("main", "Closed pos was: %d , prev_sel is: %d", id(closed_pos), prev_sel);
+              
+              id(new_pos) = id(closed_pos) * factor;
+              
+              ESP_LOGI("main", "New pos is: %d , factor is: %f", id(new_pos), factor);
+              
+              id(closed_pos) = id(new_pos);
+              id(step_sel) = 1;
+            }
+          else if (id(ms1).state == true && id(ms2).state == false && id(ms3).state == false)
+            {
+              prev_sel = id(step_sel);
+              factor = 2.0 / (float)prev_sel;
+              
+              ESP_LOGI("main", "Closed pos was: %d , prev_sel is: %d", id(closed_pos), prev_sel);
+              
+              id(new_pos) = id(closed_pos) * factor;
+              
+              ESP_LOGI("main", "New pos is: %d , factor is: %f", id(new_pos), factor);
+              
+              id(closed_pos) = id(new_pos);
+              id(step_sel) = 2;
+            }
+          else if (id(ms1).state == false && id(ms2).state == true && id(ms3).state == false)
+            {
+              prev_sel = id(step_sel);
+              factor = 4.0 / (float)prev_sel;
+              
+              ESP_LOGI("main", "Closed pos was: %d , prev_sel is: %d", id(closed_pos), prev_sel);
+              
+              id(new_pos) = id(closed_pos) * factor;
+              
+              ESP_LOGI("main", "New pos is: %d , factor is: %f", id(new_pos), factor);
+              
+              id(closed_pos) = id(new_pos);
+              id(step_sel) = 4;
+            }
+          else if (id(ms1).state == true && id(ms2).state == true && id(ms3).state == false)
+            {
+              prev_sel = id(step_sel);
+              factor = 8.0 / (float)prev_sel;
+              
+              ESP_LOGI("main", "Closed pos was: %d , prev_sel is: %d", id(closed_pos), prev_sel);
+              
+              id(new_pos) = id(closed_pos) * factor;
+              
+              ESP_LOGI("main", "New pos is: %d , factor is: %f", id(new_pos), factor);
+              
+              id(closed_pos) = id(new_pos);
+              id(step_sel) = 8;
+            }
+          else if (id(ms1).state == true && id(ms2).state == true && id(ms3).state == true)
+            {
+              prev_sel = id(step_sel);
+              factor = 16.0 / (float)prev_sel;
+              
+              ESP_LOGI("main", "Closed pos was: %d , prev_sel is: %d", id(closed_pos), prev_sel);
+              
+              id(new_pos) = id(closed_pos) * factor;
+              
+              ESP_LOGI("main", "New pos is: %d , factor is: %f", id(new_pos), factor);
+              
+              id(closed_pos) = id(new_pos);
+              id(step_sel) = 16;
+            }
+          ESP_LOGI("main", "Step_sel set to: %d", id(step_sel));
+          int speed = ((id(stepper_speed).state / 100) * 800) * id(step_sel);
+          ESP_LOGI("main", "Setting stepper speed to: %d", speed);
+          id(stepper1).set_max_speed(speed);

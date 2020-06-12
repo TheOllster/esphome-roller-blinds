@@ -1,0 +1,37 @@
+# Template file for common configurations
+esphome:
+  name: $nodename
+  platform: $platform_name
+  board: $board_type
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_pass
+  fast_connect: true
+  manual_ip:
+    static_ip: $ip_address
+    gateway: $gateway_address
+    subnet: 255.255.255.0
+  ap:
+    ssid: "${nodename} Flbck"
+    password: !secret ap_pass
+    ap_timeout: 5min
+
+captive_portal:
+
+logger:
+  level: $log_level
+#Valid values:
+  #NONE
+  #ERROR
+  #WARN
+  #INFO
+  #DEBUG (Default)
+  #VERBOSE
+  #VERY_VERBOSE
+
+api:
+  password: !secret esp_home_api
+
+ota:
+  password: !secret esp_home_api
