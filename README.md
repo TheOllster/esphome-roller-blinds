@@ -13,6 +13,8 @@ If you are using Homeassistant, this will show up as a "cover" entity, with open
 
 Usage:
 
+Before uploading, change all variables enclosed with "< >".
+
 To set the zero-position(open) of the blind, hold "button1" and release after 3-10s.
 To set the closed-position, hold "button3" and release after 3-10s.
 
